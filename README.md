@@ -70,7 +70,13 @@ cp .env.example .env
 
 #### PocketBook: какой логин использовать
 
-Публичный вход по email на cloud.pocketbook.digital для API часто возвращает «аккаунт не найден». Рабочий доступ даёт **внутренний (синхронизационный) аккаунт** вида `userXXXXX.pbookde@pbsync.com` и пароль к нему. Его можно посмотреть в настройках устройства/приложения PocketBook или в разделе «Для разработчиков» на сайте. В `.env` укажите именно этот логин и пароль в `PB_USERNAME` и `PB_PASSWORD`.
+Публичный вход по email на cloud.pocketbook.digital для API часто возвращает «аккаунт не найден». Рабочий доступ даёт **внутренний (синхронизационный) аккаунт** вида `userXXXXX.pbookde@pbsync.com` и пароль к нему.
+
+**Где посмотреть внутренний аккаунт:** в настройках Adobe ID в веб-интерфейсе PocketBook Cloud:
+
+`https://cloud.pocketbook.digital/browser/ru/user/<userID>/settings/adobe`
+
+Подставьте вместо `<userID>` свой идентификатор (число из URL вашего профиля, например `2419035` в `.../user/2419035/`). На странице отображаются UUID, логин (`userXXXXX.pbookde@pbsync.com`) и пароль — их укажите в `PB_USERNAME` и `PB_PASSWORD` в `.env`.
 
 ### Подключение в Cursor
 
