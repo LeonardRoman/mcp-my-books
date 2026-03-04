@@ -8,7 +8,11 @@
     "build": "tsgo -p tsconfig.json",
     "start": "node dist/index.js"
   },
-  "keywords": ["mcp", "author.today", "books"],
+  "keywords": [
+    "mcp",
+    "author.today",
+    "books"
+  ],
   "author": "",
   "license": "ISC",
   "dependencies": {
@@ -16,6 +20,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "@types/node": "^25.3.3"
+    "@types/node": "^25.3.3",
+    "@typescript/native-preview": "^7.0.0-dev.20260304.1"
   }
 }
