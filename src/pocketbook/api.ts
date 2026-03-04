@@ -27,9 +27,18 @@ async function fetchAllBooks(): Promise<PbBook[]> {
 
 function normalizeReadStatus(status: string): string {
   const s = (status ?? "").toLowerCase();
-  if (s === "reading" || s === "read" || s === "in_progress") return "reading";
-  if (s === "finished" || s === "completed" || s === "done") return "finished";
+  if (s === "read" || s === "finished" || s === "completed" || s === "done")
+    return "finished";
+  if (s === "reading" || s === "in_progress") return "reading";
   return s;
+}
+
+/** Дата последнего обновления позиции чтения (для сортировки «последняя открытая»). */
+function lastReadAt(b: PbBook): number {
+  const fromPosition = b.position?.updated || b.read_position?.updated;
+  if (fromPosition) return new Date(fromPosition).getTime();
+  if (b.action_date) return new Date(b.action_date).getTime();
+  return 0;
 }
 
 export async function getReadingBooks(): Promise<{
@@ -37,9 +46,14 @@ export async function getReadingBooks(): Promise<{
   totalCount: number;
 }> {
   const all = await fetchAllBooks();
-  const filtered = all.filter(
-    (b) => normalizeReadStatus(b.read_status) === "reading"
-  );
+  const filtered = all.filter((b) => {
+    const status = normalizeReadStatus(b.read_status);
+    if (status !== "reading") return false;
+    const percent = b.read_percent ?? (b.position?.percent ?? 0);
+    if (percent >= 100) return false;
+    return true;
+  });
+  filtered.sort((a, b) => lastReadAt(b) - lastReadAt(a));
   return { books: filtered, totalCount: filtered.length };
 }
 
@@ -48,9 +62,13 @@ export async function getFinishedBooks(): Promise<{
   totalCount: number;
 }> {
   const all = await fetchAllBooks();
-  const filtered = all.filter(
-    (b) => normalizeReadStatus(b.read_status) === "finished"
-  );
+  const filtered = all.filter((b) => {
+    const status = normalizeReadStatus(b.read_status);
+    if (status === "finished") return true;
+    const percent = b.read_percent ?? (b.position?.percent ?? 0);
+    return percent >= 100;
+  });
+  filtered.sort((a, b) => lastReadAt(b) - lastReadAt(a));
   return { books: filtered, totalCount: filtered.length };
 }
 
