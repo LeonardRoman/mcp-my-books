@@ -1,6 +1,6 @@
 # Books MCP
 
-MCP-сервер для доступа к библиотекам книг из **Author.Today** и **PocketBook Cloud**. Позволяет через Cursor (или другой MCP-клиент) запрашивать списки «сейчас читаю», «прочитано», отложенные книги и поиск по каталогу.
+MCP-сервер для доступа к библиотекам книг из **Author.Today**, **PocketBook Cloud** и локального **OPDS**-каталога. Позволяет через Cursor (или другой MCP-клиент) запрашивать списки «сейчас читаю», «прочитано», отложенные книги, поиск по каталогу и просмотр OPDS-библиотек.
 
 ## Возможности
 
@@ -21,6 +21,16 @@ MCP-сервер для доступа к библиотекам книг из *
 | `pb_get_finished_books` | Прочитанные книги |
 | `pb_get_all_books` | Все книги в облаке |
 
+### Инструменты OPDS (`opds_*`)
+
+Работают при заданной переменной окружения `OPDS_URL` (базовый URL OPDS-сервера, например [inpxer](https://github.com/shemanaev/inpxer)).
+
+| Инструмент | Описание |
+|------------|----------|
+| `opds_browse` | Просмотр каталога: корневой фид (последние книги) или переход по пути/ссылке пагинации |
+| `opds_search` | Полнотекстовый поиск по каталогу |
+| `opds_book_details` | Детали книги по ID (метаданные и ссылки на скачивание) |
+
 ### Объединённые инструменты
 
 | Инструмент | Описание |
@@ -31,7 +41,8 @@ MCP-сервер для доступа к библиотекам книг из *
 ## Требования
 
 - Node.js 18+
-- Учётные записи: Author.Today и/или PocketBook Cloud
+- Учётные записи: Author.Today и/или PocketBook Cloud (опционально)
+- Для OPDS: локальный OPDS-сервер и переменная `OPDS_URL`
 
 ## Установка и сборка
 
@@ -68,6 +79,12 @@ cp .env.example .env
 | `PB_CLIENT_ID` | (опционально) по умолчанию используется встроенный |
 | `PB_CLIENT_SECRET` | (опционально) по умолчанию используется встроенный |
 
+**OPDS** (обязательно для инструментов `opds_*`):
+
+| Переменная | Описание |
+|------------|----------|
+| `OPDS_URL` | Базовый URL OPDS-сервера (например `http://books.example.com` или `http://localhost:8080`) |
+
 #### PocketBook: какой логин использовать
 
 Публичный вход по email на cloud.pocketbook.digital для API часто возвращает «аккаунт не найден». Рабочий доступ даёт **внутренний (синхронизационный) аккаунт** вида `userXXXXX.pbookde@pbsync.com` и пароль к нему.
@@ -92,7 +109,8 @@ cp .env.example .env
         "AT_LOGIN": "ваш_логин_author_today",
         "AT_PASSWORD": "ваш_пароль",
         "PB_USERNAME": "userXXXXX.pbookde@pbsync.com",
-        "PB_PASSWORD": "пароль_pocketbook"
+        "PB_PASSWORD": "пароль_pocketbook",
+        "OPDS_URL": "http://localhost:8080"
       }
     }
   }
@@ -110,16 +128,20 @@ src/
 │   ├── auth.ts           # Логин (login-by-password), refresh token
 │   ├── api.ts            # Библиотека, каталог, форматирование
 │   └── types.ts          # Типы по API
-└── pocketbook/           # PocketBook Cloud API
-    ├── auth.ts           # OAuth2: providers → login
-    ├── api.ts            # Книги, фильтр по read_status
-    └── types.ts          # Типы по API
+├── pocketbook/           # PocketBook Cloud API
+│   ├── auth.ts          # OAuth2: providers → login
+│   ├── api.ts           # Книги, фильтр по read_status
+│   └── types.ts         # Типы по API
+└── opds/                # OPDS-клиент (локальный каталог)
+    ├── api.ts           # Запрос фидов, поиск, форматирование
+    └── types.ts         # Типы OPDS Feed/Entry/Link
 ```
 
 ## API
 
 - **Author.Today**: [api.author.today](https://api.author.today/help), [общая информация](https://api.author.today/home/maininfo) — авторизация по токену (Bearer), библиотека через `GET /v1/account/user-library`, каталог через `GET /v1/catalog/search`.
 - **PocketBook Cloud**: неофициальный API `https://cloud.pocketbook.digital/api/v1.0/` (auth/login, books), используется в [pocketbook-cloud-sync](https://github.com/micronull/pocketbook-cloud-sync) и [pocketbook2readwise](https://github.com/iterlace/pocketbook2readwise).
+- **OPDS**: формат [OPDS 1.1/1.2](https://specs.opds.io/), совместим с [inpxer](https://github.com/shemanaev/inpxer) и другими OPDS-серверами (Calibre, COPS и т.д.).
 
 ## Лицензия
 
