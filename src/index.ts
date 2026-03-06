@@ -13,6 +13,13 @@ import {
   getAllBooks as pbGetAll,
   formatPbBook,
 } from "./pocketbook/api.js";
+import {
+  browseCatalog,
+  searchCatalog as opdsSearch,
+  getBookDetails,
+  formatOpdsEntry,
+  getOpdsBaseUrl,
+} from "./opds/api.js";
 
 const server = new McpServer({
   name: "books-mcp",
@@ -264,10 +271,114 @@ server.tool(
   }
 );
 
+// --- OPDS (локальный каталог) ---
+
+server.tool(
+  "opds_browse",
+  "Просмотр OPDS-каталога: корневой фид (последние книги) или переход по пути/ссылке (пагинация)",
+  {
+    path: z.string().optional().describe("Путь или полный URL (например /opds или ссылка next/prev из предыдущего ответа)"),
+  },
+  async ({ path }) => {
+    try {
+      const feed = await browseCatalog(path);
+      const baseUrl = getOpdsBaseUrl();
+      if (feed.entries.length === 0) {
+        return {
+          content: [{
+            type: "text",
+            text: `OPDS — каталог «${feed.title}»: записей нет.${feed.links.length ? "\nНавигация: " + feed.links.map((l) => `${l.rel}: ${l.href}`).join("; ") : ""}`,
+          }],
+        };
+      }
+      const nav = feed.links.length
+        ? "\n\nНавигация: " + feed.links.map((l) => `${l.rel}: ${l.href}`).join(" | ")
+        : "";
+      const total =
+        feed.totalResults !== undefined ? ` (всего: ${feed.totalResults})` : "";
+      const text = [
+        `OPDS — ${feed.title}${total}`,
+        "",
+        ...feed.entries.map((e, i) => `${i + 1}. ${formatOpdsEntry(e, baseUrl)}`),
+        nav,
+      ].join("\n\n");
+      return { content: [{ type: "text", text }] };
+    } catch (err) {
+      return {
+        content: [{ type: "text", text: `Ошибка: ${err instanceof Error ? err.message : String(err)}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
+server.tool(
+  "opds_search",
+  "Поиск по OPDS-каталогу (полнотекстовый поиск)",
+  {
+    query: z.string().describe("Поисковый запрос"),
+    page: z.number().optional().describe("Номер страницы (начиная с 0)"),
+  },
+  async ({ query, page }) => {
+    try {
+      const feed = await opdsSearch(query, page ?? 0);
+      const baseUrl = getOpdsBaseUrl();
+      if (feed.entries.length === 0) {
+        return {
+          content: [{ type: "text", text: `OPDS — по запросу «${query}» ничего не найдено.` }],
+        };
+      }
+      const total =
+        feed.totalResults !== undefined ? ` Найдено: ${feed.totalResults}.` : "";
+      const nav = feed.links.length
+        ? "\n\nНавигация: " + feed.links.map((l) => `${l.rel}: ${l.href}`).join(" | ")
+        : "";
+      const text = [
+        `OPDS — поиск «${query}» (страница ${page ?? 0})${total}`,
+        "",
+        ...feed.entries.map((e, i) => `${i + 1}. ${formatOpdsEntry(e, baseUrl)}`),
+        nav,
+      ].join("\n\n");
+      return { content: [{ type: "text", text }] };
+    } catch (err) {
+      return {
+        content: [{ type: "text", text: `Ошибка: ${err instanceof Error ? err.message : String(err)}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
+server.tool(
+  "opds_book_details",
+  "Детальная информация о книге по ID (метаданные и ссылки на скачивание)",
+  {
+    bookId: z.string().describe("ID книги (например book:12345 или 12345)"),
+  },
+  async ({ bookId }) => {
+    try {
+      const entry = await getBookDetails(bookId);
+      if (!entry) {
+        return {
+          content: [{ type: "text", text: `OPDS — книга с ID «${bookId}» не найдена.` }],
+        };
+      }
+      const baseUrl = getOpdsBaseUrl();
+      const text = formatOpdsEntry(entry, baseUrl);
+      return { content: [{ type: "text", text }] };
+    } catch (err) {
+      return {
+        content: [{ type: "text", text: `Ошибка: ${err instanceof Error ? err.message : String(err)}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("Books MCP server (author.today + PocketBook Cloud) started");
+  console.error("Books MCP server (author.today + PocketBook Cloud + OPDS) started");
 }
 
 main().catch((err) => {
