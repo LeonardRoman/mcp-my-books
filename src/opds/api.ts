@@ -2,6 +2,7 @@ import { XMLParser } from "fast-xml-parser";
 import type { OpdsFeed, OpdsEntry, OpdsLink, OpdsAuthor } from "./types.js";
 
 const CACHE_TTL_MS = 60_000;
+const FETCH_TIMEOUT_MS = 120_000;
 const feedCache = new Map<
   string,
   { feed: OpdsFeed; ts: number }
@@ -137,6 +138,7 @@ async function fetchFeed(pathOrQuery: string): Promise<OpdsFeed> {
   }
   const res = await fetch(url, {
     headers: { Accept: "application/atom+xml, application/xml, text/xml" },
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
   if (!res.ok) {
     throw new Error(
@@ -162,19 +164,36 @@ export async function searchCatalog(
   query: string,
   page = 0
 ): Promise<OpdsFeed> {
-  const encoded = encodeURIComponent(query.trim());
-  const path = `/opds/search?q=${encoded}&page=${page}`;
+  const encoded = query
+    .trim()
+    .split(/\s+/)
+    .map((w) => encodeURIComponent(w))
+    .join("+");
+  const pageSuffix = page > 0 ? `&page=${page}` : "";
+  const path = `/opds/search?q=${encoded}${pageSuffix}`;
   return fetchFeed(path);
 }
 
 export async function getBookDetails(bookId: string): Promise<OpdsEntry | null> {
   const idNorm = bookId.startsWith("book:") ? bookId : `book:${bookId}`;
-  const feed = await browseCatalog("/opds");
-  const entry = feed.entries.find((e) => e.id === idNorm || e.id === bookId);
-  if (entry) return entry;
-  const searchFeed = await searchCatalog(bookId.replace(/^book:/, ""), 0);
-  const found = searchFeed.entries.find((e) => e.id === idNorm || e.id === bookId);
-  return found ?? null;
+
+  const rootFeed = await browseCatalog("/opds");
+  const rootHit = rootFeed.entries.find((e) => e.id === idNorm || e.id === bookId);
+  if (rootHit) return rootHit;
+
+  const numericId = bookId.replace(/^book:/, "");
+  const MAX_PAGES = 10;
+
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const feed = await searchCatalog(numericId, page);
+    const hit = feed.entries.find((e) => e.id === idNorm || e.id === bookId);
+    if (hit) return hit;
+
+    const hasNext = feed.links.some((l) => l.rel === "next");
+    if (!hasNext || feed.entries.length === 0) break;
+  }
+
+  return null;
 }
 
 export function formatOpdsEntry(entry: OpdsEntry, baseUrl?: string): string {
