@@ -20,6 +20,14 @@ import {
   formatOpdsEntry,
   getOpdsBaseUrl,
 } from "./opds/api.js";
+import {
+  syncLibraryToObsidian,
+  formatSyncReport,
+} from "./obsidian/sync.js";
+import {
+  uploadBookFromOpds,
+  formatUploadResult,
+} from "./pocketbook/upload.js";
 
 const server = new McpServer({
   name: "books-mcp",
@@ -375,10 +383,88 @@ server.tool(
   }
 );
 
+// --- Obsidian sync ---
+
+server.tool(
+  "sync_library_to_obsidian",
+  "Синхронизация библиотеки (reading + finished из AT и PB) в Obsidian vault: создание/обновление карточек книг, авторов, серий",
+  {
+    vault_path: z
+      .string()
+      .optional()
+      .describe("Путь к Obsidian vault (по умолчанию из OBSIDIAN_VAULT_PATH)"),
+    dry_run: z
+      .boolean()
+      .optional()
+      .describe("Только показать, что будет сделано, без записи файлов"),
+  },
+  async ({ vault_path, dry_run }) => {
+    try {
+      const vaultPath =
+        vault_path ?? process.env.OBSIDIAN_VAULT_PATH;
+      if (!vaultPath) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: "Ошибка: не задан путь к vault. Укажите OBSIDIAN_VAULT_PATH или передайте vault_path.",
+            },
+          ],
+          isError: true,
+        };
+      }
+      const report = await syncLibraryToObsidian(vaultPath, dry_run ?? false);
+      const prefix = dry_run ? "[DRY RUN] " : "";
+      return {
+        content: [{ type: "text" as const, text: prefix + formatSyncReport(report) }],
+      };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Ошибка синхронизации: ${err instanceof Error ? err.message : String(err)}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  }
+);
+
+// --- PocketBook upload (OPDS → PB Cloud) ---
+
+server.tool(
+  "upload_to_pocketbook",
+  "Скачать книгу из OPDS-каталога (локальная библиотека) и загрузить в PocketBook Cloud",
+  {
+    book_id: z.string().describe("ID книги в OPDS (например book:12345 или 12345)"),
+  },
+  async ({ book_id }) => {
+    try {
+      const result = await uploadBookFromOpds(book_id);
+      return {
+        content: [{ type: "text" as const, text: formatUploadResult(result) }],
+        ...(result.success ? {} : { isError: true }),
+      };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Ошибка загрузки: ${err instanceof Error ? err.message : String(err)}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  }
+);
+
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("Books MCP server (author.today + PocketBook Cloud + OPDS) started");
+  console.error("Books MCP server (author.today + PocketBook Cloud + OPDS + Obsidian sync) started");
 }
 
 main().catch((err) => {

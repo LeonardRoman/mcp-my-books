@@ -38,6 +38,13 @@ MCP-сервер для доступа к библиотекам книг из *
 | `get_all_reading_books` | «Сейчас читаю» из обоих сервисов |
 | `get_all_finished_books` | «Прочитано» из обоих сервисов |
 
+### Obsidian-синхронизация
+
+| Инструмент | Описание |
+|------------|----------|
+| `sync_library_to_obsidian` | Синхронизация reading + finished из AT и PB в Obsidian vault: создаёт/обновляет карточки книг, авторов и серий |
+| `upload_to_pocketbook` | Скачать книгу из OPDS-каталога и загрузить в PocketBook Cloud |
+
 ## Требования
 
 - Node.js 18+
@@ -85,6 +92,12 @@ cp .env.example .env
 |------------|----------|
 | `OPDS_URL` | Базовый URL OPDS-сервера (например `http://books.example.com` или `http://localhost:8080`) |
 
+**Obsidian** (для `sync_library_to_obsidian`):
+
+| Переменная | Описание |
+|------------|----------|
+| `OBSIDIAN_VAULT_PATH` | Абсолютный путь к Obsidian vault |
+
 #### PocketBook: какой логин использовать
 
 Публичный вход по email на cloud.pocketbook.digital для API часто возвращает «аккаунт не найден». Рабочий доступ даёт **внутренний (синхронизационный) аккаунт** вида `userXXXXX.pbookde@pbsync.com` и пароль к нему.
@@ -110,7 +123,8 @@ cp .env.example .env
         "AT_PASSWORD": "ваш_пароль",
         "PB_USERNAME": "userXXXXX.pbookde@pbsync.com",
         "PB_PASSWORD": "пароль_pocketbook",
-        "OPDS_URL": "http://localhost:8080"
+        "OPDS_URL": "http://localhost:8080",
+        "OBSIDIAN_VAULT_PATH": "/path/to/your/vault"
       }
     }
   }
@@ -131,10 +145,13 @@ src/
 ├── pocketbook/           # PocketBook Cloud API
 │   ├── auth.ts          # OAuth2: providers → login
 │   ├── api.ts           # Книги, фильтр по read_status
+│   ├── upload.ts        # Загрузка книг в PB Cloud из OPDS
 │   └── types.ts         # Типы по API
-└── opds/                # OPDS-клиент (локальный каталог)
-    ├── api.ts           # Запрос фидов, поиск, форматирование
-    └── types.ts         # Типы OPDS Feed/Entry/Link
+├── opds/                # OPDS-клиент (локальный каталог)
+│   ├── api.ts           # Запрос фидов, поиск, форматирование
+│   └── types.ts         # Типы OPDS Feed/Entry/Link
+└── obsidian/            # Синхронизация с Obsidian vault
+    └── sync.ts          # Генерация markdown, обновление frontmatter
 ```
 
 ## API
