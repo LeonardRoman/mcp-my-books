@@ -7,6 +7,7 @@ const feedCache = new Map<
   string,
   { feed: OpdsFeed; ts: number }
 >();
+const entryCache = new Map<string, OpdsEntry>();
 
 function getBaseUrl(): string {
   const url = process.env.OPDS_URL?.trim();
@@ -148,6 +149,9 @@ async function fetchFeed(pathOrQuery: string): Promise<OpdsFeed> {
   const xml = await res.text();
   const feed = parseFeed(xml);
   feedCache.set(url, { feed, ts: Date.now() });
+  for (const entry of feed.entries) {
+    if (entry.id) entryCache.set(entry.id, entry);
+  }
   return feed;
 }
 
@@ -177,21 +181,12 @@ export async function searchCatalog(
 export async function getBookDetails(bookId: string): Promise<OpdsEntry | null> {
   const idNorm = bookId.startsWith("book:") ? bookId : `book:${bookId}`;
 
+  const cached = entryCache.get(idNorm) ?? entryCache.get(bookId);
+  if (cached) return cached;
+
   const rootFeed = await browseCatalog("/opds");
   const rootHit = rootFeed.entries.find((e) => e.id === idNorm || e.id === bookId);
   if (rootHit) return rootHit;
-
-  const numericId = bookId.replace(/^book:/, "");
-  const MAX_PAGES = 10;
-
-  for (let page = 0; page < MAX_PAGES; page++) {
-    const feed = await searchCatalog(numericId, page);
-    const hit = feed.entries.find((e) => e.id === idNorm || e.id === bookId);
-    if (hit) return hit;
-
-    const hasNext = feed.links.some((l) => l.rel === "next");
-    if (!hasNext || feed.entries.length === 0) break;
-  }
 
   return null;
 }

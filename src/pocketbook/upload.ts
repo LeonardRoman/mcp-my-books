@@ -18,6 +18,36 @@ function getOpdsBaseUrl(): string {
   return url.replace(/\/$/, "");
 }
 
+const TRANSLIT: Record<string, string> = {
+  а:'a',б:'b',в:'v',г:'g',д:'d',е:'e',ё:'yo',ж:'zh',з:'z',и:'i',й:'y',
+  к:'k',л:'l',м:'m',н:'n',о:'o',п:'p',р:'r',с:'s',т:'t',у:'u',ф:'f',
+  х:'kh',ц:'ts',ч:'ch',ш:'sh',щ:'shch',ъ:'',ы:'y',ь:'',э:'e',ю:'yu',я:'ya',
+};
+
+function transliterate(text: string): string {
+  return text
+    .split("")
+    .map((c) => {
+      const lower = c.toLowerCase();
+      if (lower in TRANSLIT) {
+        const t = TRANSLIT[lower];
+        return c === lower ? t : t.charAt(0).toUpperCase() + t.slice(1);
+      }
+      return c;
+    })
+    .join("")
+    .replace(/[<>:"/\\|?*]+/g, "")
+    .replace(/\s+/g, "_")
+    .trim();
+}
+
+function normalizeMime(mime: string): string {
+  if (mime.includes("fb2") || mime.includes("fictionbook"))
+    return "application/x-fictionbook+xml";
+  if (mime.includes("epub")) return "application/epub+zip";
+  return mime;
+}
+
 function resolveAcquisitionLink(entry: OpdsEntry): {
   url: string;
   mimeType: string;
@@ -50,10 +80,10 @@ function resolveAcquisitionLink(entry: OpdsEntry): {
       ? ".fb2"
       : ".epub";
 
-  const safeTitle = entry.title.replace(/[<>:"/\\|?*]/g, "").trim();
+  const safeTitle = transliterate(entry.title);
   const author = entry.authors[0]?.name ?? "Unknown";
-  const safeAuthor = author.replace(/[<>:"/\\|?*]/g, "").trim();
-  const fileName = `${safeAuthor} — ${safeTitle}${ext}`;
+  const safeAuthor = transliterate(author);
+  const fileName = `${safeAuthor}_-_${safeTitle}${ext}`;
 
   return {
     url: href,
@@ -82,34 +112,16 @@ async function uploadToPocketBook(
 ): Promise<void> {
   const token = await getToken();
 
-  const boundary = `----PBUpload${Date.now()}`;
-  const fileBytes = new Uint8Array(fileData);
-
-  const headerStr =
-    `--${boundary}\r\n` +
-    `Content-Disposition: form-data; name="file"; filename="${fileName}"\r\n` +
-    `Content-Type: ${mimeType}\r\n\r\n`;
-  const footerStr = `\r\n--${boundary}--\r\n`;
-
-  const headerBytes = new TextEncoder().encode(headerStr);
-  const footerBytes = new TextEncoder().encode(footerStr);
-
-  const body = new Uint8Array(
-    headerBytes.length + fileBytes.length + footerBytes.length
+  const res = await fetch(
+    `${API_BASE}/files/${encodeURIComponent(fileName)}?access_token=${token}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": mimeType },
+      body: fileData,
+    }
   );
-  body.set(headerBytes, 0);
-  body.set(fileBytes, headerBytes.length);
-  body.set(footerBytes, headerBytes.length + fileBytes.length);
 
-  const res = await fetch(`${API_BASE}/books`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": `multipart/form-data; boundary=${boundary}`,
-    },
-    body: body,
-  });
-
+  if (res.status === 409) return;
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     throw new Error(
@@ -143,9 +155,10 @@ export async function uploadBookFromOpds(bookId: string): Promise<UploadResult> 
 
   const { data, contentType } = await downloadBook(acqLink.url);
 
-  const effectiveMime = contentType !== "application/octet-stream"
+  const rawMime = contentType !== "application/octet-stream"
     ? contentType
     : acqLink.mimeType;
+  const effectiveMime = normalizeMime(rawMime);
 
   await uploadToPocketBook(data, acqLink.fileName, effectiveMime);
 
