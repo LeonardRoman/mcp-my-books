@@ -38,12 +38,19 @@ MCP-сервер для доступа к библиотекам книг из *
 | `get_all_reading_books` | «Сейчас читаю» из обоих сервисов |
 | `get_all_finished_books` | «Прочитано» из обоих сервисов |
 
+### Загрузка книг
+
+| Инструмент | Описание |
+|------------|----------|
+| `upload_to_pocketbook` | Найти книгу в OPDS по ID, скачать и загрузить в PocketBook Cloud (fb2/epub) |
+
+Типичный сценарий: `opds_search` → выбрать книгу → `upload_to_pocketbook` с полученным ID.
+
 ### Obsidian-синхронизация
 
 | Инструмент | Описание |
 |------------|----------|
 | `sync_library_to_obsidian` | Синхронизация reading + finished из AT и PB в Obsidian vault: создаёт/обновляет карточки книг, авторов и серий |
-| `upload_to_pocketbook` | Скачать книгу из OPDS-каталога и загрузить в PocketBook Cloud |
 
 ## Требования
 
@@ -157,8 +164,8 @@ src/
 ## API
 
 - **Author.Today**: [api.author.today](https://api.author.today/help), [общая информация](https://api.author.today/home/maininfo) — авторизация по токену (Bearer), библиотека через `GET /v1/account/user-library`, каталог через `GET /v1/catalog/search`.
-- **PocketBook Cloud**: неофициальный API `https://cloud.pocketbook.digital/api/v1.0/` (auth/login, books), используется в [pocketbook-cloud-sync](https://github.com/micronull/pocketbook-cloud-sync) и [pocketbook2readwise](https://github.com/iterlace/pocketbook2readwise).
-- **OPDS**: формат [OPDS 1.1/1.2](https://specs.opds.io/), совместим с [inpxer](https://github.com/shemanaev/inpxer) и другими OPDS-серверами (Calibre, COPS и т.д.).
+- **PocketBook Cloud**: неофициальный API `https://cloud.pocketbook.digital/api/v1.0/` — авторизация через OAuth2 (`auth/login`), список книг (`GET /books`), загрузка файлов (`PUT /files/{name}?access_token=...`). Используется в [pocketbook-cloud-sync](https://github.com/micronull/pocketbook-cloud-sync) и [pocketbook2readwise](https://github.com/iterlace/pocketbook2readwise).
+- **OPDS**: формат [OPDS 1.1/1.2](https://specs.opds.io/), совместим с [inpxer](https://github.com/shemanaev/inpxer) и другими OPDS-серверами (Calibre, COPS и т.д.). Поиск кодирует пробелы как `+` для совместимости с inpxer.
 
 ## Лицензия
 
