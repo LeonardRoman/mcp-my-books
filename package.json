@@ -1,7 +1,7 @@
 {
-  "name": "author-today-mcp",
-  "version": "1.0.0",
-  "description": "MCP server for author.today — search books, track reading progress and library",
+  "name": "mcp-my-books",
+  "version": "2.0.0",
+  "description": "MCP server for managing book libraries — Author.Today, PocketBook Cloud, OPDS catalogs and Obsidian sync",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
@@ -11,6 +11,9 @@
   "keywords": [
     "mcp",
     "author.today",
+    "pocketbook",
+    "opds",
+    "obsidian",
     "books"
   ],
   "author": "",
