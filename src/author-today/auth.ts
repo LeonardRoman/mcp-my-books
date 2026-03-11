@@ -5,6 +5,10 @@ const GUEST_HEADERS = {
   "Content-Type": "application/json",
 };
 
+const FETCH_TIMEOUT_MS = 15_000;
+const MAX_RETRIES = 3;
+const RETRY_DELAYS = [1000, 3000, 9000];
+
 let cachedToken: string | null = null;
 
 export function getCredentials(): { login: string; password: string } {
@@ -18,10 +22,49 @@ export function getCredentials(): { login: string; password: string } {
   return { login, password };
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export async function fetchWithRetry(
+  url: string,
+  init?: RequestInit,
+  retries = MAX_RETRIES
+): Promise<Response> {
+  for (let attempt = 0; attempt < retries; attempt++) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    try {
+      const res = await fetch(url, { ...init, signal: controller.signal });
+      clearTimeout(timeoutId);
+
+      if (res.status === 429 && attempt < retries - 1) {
+        const retryAfter = parseInt(res.headers.get("Retry-After") ?? "2", 10);
+        console.error(`Rate limited (429), retrying after ${retryAfter + 1}s...`);
+        await sleep((retryAfter + 1) * 1000);
+        continue;
+      }
+
+      return res;
+    } catch (err) {
+      clearTimeout(timeoutId);
+      if (attempt === retries - 1) throw err;
+      const delay = RETRY_DELAYS[attempt] ?? RETRY_DELAYS[RETRY_DELAYS.length - 1];
+      console.error(
+        `AT fetch attempt ${attempt + 1}/${retries} failed: ${
+          err instanceof Error ? err.message : String(err)
+        }. Retrying in ${delay}ms...`
+      );
+      await sleep(delay);
+    }
+  }
+  throw new Error("fetchWithRetry: unreachable");
+}
+
 export async function login(): Promise<string> {
   const { login, password } = getCredentials();
 
-  const res = await fetch(`${API_BASE}/account/login-by-password`, {
+  const res = await fetchWithRetry(`${API_BASE}/account/login-by-password`, {
     method: "POST",
     headers: GUEST_HEADERS,
     body: JSON.stringify({ login, password }),
@@ -40,7 +83,7 @@ export async function login(): Promise<string> {
 export async function refreshToken(): Promise<string> {
   if (!cachedToken) return login();
 
-  const res = await fetch(`${API_BASE}/account/refresh-token`, {
+  const res = await fetchWithRetry(`${API_BASE}/account/refresh-token`, {
     method: "POST",
     headers: { Authorization: `Bearer ${cachedToken}` },
   });
