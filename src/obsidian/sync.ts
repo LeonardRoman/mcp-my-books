@@ -695,6 +695,7 @@ function generateBookMarkdown(book: UnifiedBook): string {
     `source_url: ${formatYamlValue(book.sourceUrl)}`,
     `cover: ${formatYamlValue(book.coverLocal || book.cover)}`,
     `progress: ${book.progress}`,
+    `progress_updated: ${dateEnd || dateStart || todayIso()}`,
     `pages: ${book.pages}`,
     `text_length: ${book.textLength}`,
     `date_start: ${dateStart}`,
@@ -824,7 +825,10 @@ function updateBookFrontmatter(
   const updates: Record<string, unknown> = {};
   if (!isAbandoned) {
     updates.status = book.status;
-    updates.progress = book.progress;
+    if (yaml.progress !== book.progress) {
+      updates.progress = book.progress;
+      updates.progress_updated = todayIso();
+    }
   }
 
   if (book.pages > 0) updates.pages = book.pages;
@@ -875,7 +879,7 @@ function updateBookFrontmatter(
   const fieldOrder = [
     "created", "type", "title", "author", "series", "series_num",
     "genre", "status", "source", "source_id", "source_url", "cover",
-    "progress", "pages", "text_length", "date_start", "date_end", "rating",
+    "progress", "progress_updated", "pages", "text_length", "date_start", "date_end", "rating",
     "like_count", "tags", "aliases",
   ];
 
@@ -1535,7 +1539,7 @@ function rebuildYaml(yaml: Record<string, unknown>): string {
   const fieldOrder = [
     "created", "type", "title", "author", "series", "series_num",
     "genre", "status", "source", "source_id", "source_url", "cover",
-    "progress", "pages", "text_length", "date_start", "date_end", "rating",
+    "progress", "progress_updated", "pages", "text_length", "date_start", "date_end", "rating",
     "like_count", "tags", "aliases",
   ];
   const lines: string[] = [];
