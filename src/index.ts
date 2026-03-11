@@ -23,6 +23,8 @@ import {
 import {
   syncLibraryToObsidian,
   formatSyncReport,
+  enrichExistingBooks,
+  formatEnrichReport,
 } from "./obsidian/sync.js";
 import {
   uploadBookFromOpds,
@@ -387,7 +389,7 @@ server.tool(
 
 server.tool(
   "sync_library_to_obsidian",
-  "Синхронизация библиотеки (reading + finished из AT и PB) в Obsidian vault: создание/обновление карточек книг, авторов, серий",
+  "Синхронизация библиотеки (reading + finished + saved из AT и PB) в Obsidian vault: создание/обновление карточек книг, авторов, серий. Автоматически обогащает новые книги аннотациями и жанрами.",
   {
     vault_path: z
       .string()
@@ -426,6 +428,43 @@ server.tool(
             text: `Ошибка синхронизации: ${err instanceof Error ? err.message : String(err)}`,
           },
         ],
+        isError: true,
+      };
+    }
+  }
+);
+
+// --- Enrich existing books ---
+
+server.tool(
+  "enrich_books",
+  "Обогатить существующие карточки книг аннотациями и жанрами из Author.Today (пакетно, с учётом rate limit)",
+  {
+    vault_path: z
+      .string()
+      .optional()
+      .describe("Путь к Obsidian vault (по умолчанию из OBSIDIAN_VAULT_PATH)"),
+    batch_size: z
+      .number()
+      .optional()
+      .describe("Количество книг для обработки за один вызов (по умолчанию 50)"),
+  },
+  async ({ vault_path, batch_size }) => {
+    try {
+      const vaultPath = vault_path ?? process.env.OBSIDIAN_VAULT_PATH;
+      if (!vaultPath) {
+        return {
+          content: [{ type: "text" as const, text: "Ошибка: не задан путь к vault." }],
+          isError: true,
+        };
+      }
+      const report = await enrichExistingBooks(vaultPath, batch_size ?? 50);
+      return {
+        content: [{ type: "text" as const, text: formatEnrichReport(report) }],
+      };
+    } catch (err) {
+      return {
+        content: [{ type: "text" as const, text: `Ошибка обогащения: ${err instanceof Error ? err.message : String(err)}` }],
         isError: true,
       };
     }
