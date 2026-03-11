@@ -6,6 +6,7 @@ import {
   getFinishedBooks as pbGetFinished,
 } from "../pocketbook/api.js";
 import { genreSlugToName, genreIdToName } from "../author-today/genres.js";
+import { searchBookDescription } from "../web-search.js";
 import type { WorkMetaInfo } from "../author-today/types.js";
 import type { PbBook } from "../pocketbook/types.js";
 
@@ -58,6 +59,7 @@ interface SyncReport {
   seriesCreated: string[];
   coversDownloaded: number;
   enriched: number;
+  webEnriched: number;
   errors: string[];
 }
 
@@ -87,7 +89,13 @@ function cleanTitle(title: string): string {
 }
 
 function normalizeForDedup(s: string): string {
-  return s.trim().toLowerCase().replace(/ё/g, "е");
+  return s
+    .trim()
+    .toLowerCase()
+    .replace(/ё/g, "е")
+    .replace(/[?!«»""'']/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function authorTokenKey(name: string): string {
@@ -96,6 +104,23 @@ function authorTokenKey(name: string): string {
 
 function dedupKey(title: string, author: string): string {
   return `${normalizeForDedup(cleanTitle(title))}|||${authorTokenKey(author)}`;
+}
+
+function extractSubTitles(title: string): string[] {
+  const subs: string[] = [];
+  const addSub = (s: string) => {
+    const t = s.trim();
+    if (t.length >= 3 && !subs.includes(t)) subs.push(t);
+  };
+  const seriesSep = /\.\s+(?:Книга|Том|Часть|Кн\.|Т\.)\s*\d+[\.\s]*/i;
+  const seriesParts = title.split(seriesSep);
+  if (seriesParts.length > 1) addSub(seriesParts[seriesParts.length - 1]);
+  const dashNumSep = /-\d+\.\s+/;
+  const dashParts = title.split(dashNumSep);
+  if (dashParts.length > 1) addSub(dashParts[dashParts.length - 1]);
+  const dotParts = title.split(/\.\s+/);
+  if (dotParts.length >= 2) addSub(dotParts[dotParts.length - 1]);
+  return subs;
 }
 
 async function fileExists(path: string): Promise<boolean> {
@@ -420,7 +445,7 @@ function mapPbBook(b: PbBook): UnifiedBook {
     textLength: 0,
     likeCount: 0,
     addedDate: isoDate(b.created_at),
-    finishedDate: isFinished ? isoDate(b.action_date) || todayIso() : "",
+    finishedDate: isFinished ? isoDate(b.action_date) || "" : "",
     atAuthorUsername: "",
   };
 }
@@ -1023,8 +1048,66 @@ export async function syncLibraryToObsidian(
     seriesCreated: [],
     coversDownloaded: 0,
     enriched: 0,
+    webEnriched: 0,
     errors: [],
   };
+
+  // ---- Pre-scan existing files to prevent duplicates ----
+
+  const { readdir } = await import("node:fs/promises");
+  const existingBookFiles = new Set<string>();
+  const sourceIdIndex = new Map<string, string>();
+  const bookDedupIndex = new Map<string, string>();
+
+  try {
+    const files = (await readdir(booksDir)).filter((f) => f.endsWith(".md"));
+    for (const file of files) {
+      existingBookFiles.add(file);
+      const content = await readFile(join(booksDir, file), "utf-8");
+      const { yaml } = parseFrontmatter(content);
+      if (yaml.source_id) sourceIdIndex.set(String(yaml.source_id), file);
+      const title = String(yaml.title ?? "");
+      const rawAuthor = yaml.author;
+      const author = Array.isArray(rawAuthor)
+        ? String(rawAuthor[0] ?? "").replace(/^\[\[|\]\]$/g, "")
+        : String(rawAuthor ?? "").replace(/^\[\[|\]\]$/g, "");
+      if (title) {
+        bookDedupIndex.set(dedupKey(title, author), file);
+        for (const sub of extractSubTitles(title)) {
+          const subKey = dedupKey(sub, author);
+          if (!bookDedupIndex.has(subKey)) bookDedupIndex.set(subKey, file);
+        }
+      }
+    }
+    console.error(`Pre-scan: ${files.length} existing book files indexed`);
+  } catch {
+    // Directory might not exist yet on first run
+  }
+
+  const existingAuthorKeys = new Map<string, string>();
+  try {
+    const authorFiles = (await readdir(authorsDir)).filter((f) => f.endsWith(".md"));
+    for (const file of authorFiles) {
+      const name = file.replace(/\.md$/, "");
+      existingAuthorKeys.set(authorTokenKey(name), file);
+    }
+  } catch {
+    // Directory might not exist yet
+  }
+
+  function findExistingBookFile(book: UnifiedBook, filename: string): string | null {
+    if (existingBookFiles.has(filename)) return filename;
+    const byId = sourceIdIndex.get(book.sourceId);
+    if (byId) return byId;
+    const author = book.author[0] ?? "";
+    const byKey = bookDedupIndex.get(dedupKey(book.title, author));
+    if (byKey) return byKey;
+    for (const sub of extractSubTitles(book.title)) {
+      const bySub = bookDedupIndex.get(dedupKey(sub, author));
+      if (bySub) return bySub;
+    }
+    return null;
+  }
 
   // ---- Fetch books from both sources ----
 
@@ -1086,8 +1169,7 @@ export async function syncLibraryToObsidian(
       if (book.source !== "author-today") continue;
       const mainAuthor = book.author[0] ?? "Неизвестный автор";
       const filename = sanitizeFilename(`${mainAuthor} — ${book.title}`) + ".md";
-      const filePath = join(booksDir, filename);
-      if (!(await fileExists(filePath))) {
+      if (!findExistingBookFile(book, filename)) {
         newAtBooks.push(book);
       }
     }
@@ -1115,6 +1197,39 @@ export async function syncLibraryToObsidian(
         }
       }
       console.error(`Enriched ${enriched}/${newAtBooks.length} books`);
+    }
+
+    // ---- Web search fallback for books without annotation ----
+
+    const booksNeedingDesc: UnifiedBook[] = [];
+    for (const book of books) {
+      if (book.annotation) continue;
+      const mainAuthor = book.author[0] ?? "Неизвестный автор";
+      const filename = sanitizeFilename(`${mainAuthor} — ${book.title}`) + ".md";
+      if (!findExistingBookFile(book, filename)) {
+        booksNeedingDesc.push(book);
+      }
+    }
+
+    if (booksNeedingDesc.length > 0) {
+      console.error(`Web search fallback for ${booksNeedingDesc.length} books without annotation...`);
+      const WEB_BATCH = 5;
+      for (let i = 0; i < booksNeedingDesc.length; i += WEB_BATCH) {
+        const batch = booksNeedingDesc.slice(i, i + WEB_BATCH);
+        await Promise.all(
+          batch.map(async (book) => {
+            const desc = await searchBookDescription(book.title, book.author[0] ?? "");
+            if (desc) {
+              book.annotation = desc;
+              report.webEnriched++;
+            }
+          })
+        );
+        if (i + WEB_BATCH < booksNeedingDesc.length) {
+          await new Promise((r) => setTimeout(r, 1000));
+        }
+      }
+      console.error(`Web enriched: ${report.webEnriched}/${booksNeedingDesc.length}`);
     }
   }
 
@@ -1147,20 +1262,26 @@ export async function syncLibraryToObsidian(
     const mainAuthor = book.author[0] ?? "Неизвестный автор";
     const filename =
       sanitizeFilename(`${mainAuthor} — ${book.title}`) + ".md";
-    const filePath = join(booksDir, filename);
 
-    if (await fileExists(filePath)) {
-      const existing = await readFile(filePath, "utf-8");
+    const existingFile = findExistingBookFile(book, filename);
+
+    if (existingFile) {
+      const existingPath = join(booksDir, existingFile);
+      const existing = await readFile(existingPath, "utf-8");
       const { content, changed } = updateBookFrontmatter(existing, book);
       if (changed) {
-        if (!dryRun) await writeFile(filePath, content, "utf-8");
-        report.updated.push(filename);
+        if (!dryRun) await writeFile(existingPath, content, "utf-8");
+        report.updated.push(existingFile);
       } else {
-        report.unchanged.push(filename);
+        report.unchanged.push(existingFile);
       }
     } else {
+      const filePath = join(booksDir, filename);
       if (!dryRun) {
         await writeFile(filePath, generateBookMarkdown(book), "utf-8");
+        existingBookFiles.add(filename);
+        sourceIdIndex.set(book.sourceId, filename);
+        bookDedupIndex.set(dedupKey(book.title, book.author[0] ?? ""), filename);
       }
       report.created.push(filename);
     }
@@ -1172,7 +1293,7 @@ export async function syncLibraryToObsidian(
   const authorsMeta = collectAuthorMeta(books, canonMap);
   const seriesMeta = collectSeriesMeta(books);
 
-  // ---- Write author pages (with dedup) ----
+  // ---- Write author pages (with dedup via pre-scan index) ----
 
   const writtenAuthorKeys = new Set<string>();
 
@@ -1180,18 +1301,19 @@ export async function syncLibraryToObsidian(
     if (writtenAuthorKeys.has(key)) continue;
     writtenAuthorKeys.add(key);
 
-    const authorFile = join(
-      authorsDir,
-      sanitizeFilename(meta.canonicalName) + ".md"
-    );
+    const authorFilename = sanitizeFilename(meta.canonicalName) + ".md";
+    const authorFile = join(authorsDir, authorFilename);
+    const existingByKey = existingAuthorKeys.has(key);
+    const existsByName = await fileExists(authorFile);
 
-    if (!(await fileExists(authorFile))) {
+    if (!existingByKey && !existsByName) {
       if (!dryRun) {
         await writeFile(
           authorFile,
           generateAuthorMarkdown(meta.canonicalName, meta),
           "utf-8"
         );
+        existingAuthorKeys.set(key, authorFilename);
       }
       report.authorsCreated.push(meta.canonicalName);
     }
@@ -1227,6 +1349,9 @@ export function formatSyncReport(report: SyncReport): string {
   if (report.enriched > 0) {
     lines.push(`  Обогащено (аннотация/жанр): ${report.enriched}`);
   }
+  if (report.webEnriched > 0) {
+    lines.push(`  Обогащено (веб-поиск): ${report.webEnriched}`);
+  }
 
   if (report.errors.length > 0) {
     lines.push("", "Ошибки:");
@@ -1258,8 +1383,20 @@ export function formatSyncReport(report: SyncReport): string {
 
 export interface EnrichReport {
   enriched: number;
+  webEnriched: number;
   skipped: number;
   errors: string[];
+}
+
+interface EnrichItem {
+  file: string;
+  content: string;
+  source: string;
+  sourceId: number;
+  title: string;
+  author: string;
+  needsAnnotation: boolean;
+  needsGenre: boolean;
 }
 
 export async function enrichExistingBooks(
@@ -1267,19 +1404,17 @@ export async function enrichExistingBooks(
   batchSize = 50
 ): Promise<EnrichReport> {
   const booksDir = join(vaultPath, "Library", "Books");
-  const report: EnrichReport = { enriched: 0, skipped: 0, errors: [] };
+  const report: EnrichReport = { enriched: 0, webEnriched: 0, skipped: 0, errors: [] };
 
   const { readdir } = await import("node:fs/promises");
   const files = (await readdir(booksDir)).filter((f) => f.endsWith(".md"));
 
-  const toEnrich: { file: string; sourceId: number; content: string }[] = [];
+  const toEnrich: EnrichItem[] = [];
 
   for (const file of files) {
     const filePath = join(booksDir, file);
     const content = await readFile(filePath, "utf-8");
     const { yaml, body } = parseFrontmatter(content);
-
-    if (yaml.source !== "author-today") { report.skipped++; continue; }
 
     const descSection = body.split("## Описание")[1] ?? "";
     const descContent = descSection.split(/\n##\s/)[0].trim();
@@ -1288,10 +1423,25 @@ export async function enrichExistingBooks(
 
     if (hasAnnotation && hasGenre) { report.skipped++; continue; }
 
-    const sourceId = Number(yaml.source_id);
-    if (!sourceId) { report.skipped++; continue; }
+    const source = String(yaml.source ?? "");
+    const sourceId = Number(yaml.source_id) || 0;
 
-    toEnrich.push({ file, sourceId, content });
+    if (source === "author-today" && !sourceId) { report.skipped++; continue; }
+    if (source !== "author-today" && hasAnnotation) { report.skipped++; continue; }
+
+    const title = String(yaml.title ?? "");
+    const rawAuthor = yaml.author;
+    const author = Array.isArray(rawAuthor)
+      ? String(rawAuthor[0] ?? "").replace(/^\[\[|\]\]$/g, "")
+      : String(rawAuthor ?? "").replace(/^\[\[|\]\]$/g, "");
+
+    if (!title) { report.skipped++; continue; }
+
+    toEnrich.push({
+      file, content, source, sourceId, title, author,
+      needsAnnotation: !hasAnnotation,
+      needsGenre: !hasGenre,
+    });
     if (toEnrich.length >= batchSize) break;
   }
 
@@ -1303,17 +1453,30 @@ export async function enrichExistingBooks(
     await Promise.all(
       batch.map(async (item) => {
         try {
-          const details = await getWorkDetails(item.sourceId);
-          if (!details) return;
-
           const { yaml, body } = parseFrontmatter(item.content);
+          let annotation = "";
+          let genreId = 0;
           let changed = false;
+          let fromWeb = false;
 
-          if (details.annotation) {
-            const descSection = "## Описание";
-            const idx = body.indexOf(descSection);
+          if (item.source === "author-today" && item.sourceId) {
+            const details = await getWorkDetails(item.sourceId);
+            if (details) {
+              annotation = details.annotation ?? "";
+              genreId = details.genreId ?? 0;
+            }
+          }
+
+          if (!annotation && item.needsAnnotation) {
+            annotation = await searchBookDescription(item.title, item.author);
+            if (annotation) fromWeb = true;
+          }
+
+          if (annotation && item.needsAnnotation) {
+            const descHeader = "## Описание";
+            const idx = body.indexOf(descHeader);
             if (idx !== -1) {
-              const afterDesc = body.substring(idx + descSection.length);
+              const afterDesc = body.substring(idx + descHeader.length);
               const nextSection = afterDesc.indexOf("\n## ");
               const existingDesc = nextSection !== -1
                 ? afterDesc.substring(0, nextSection).trim()
@@ -1321,16 +1484,16 @@ export async function enrichExistingBooks(
 
               if (existingDesc.length < 10) {
                 const newBody = nextSection !== -1
-                  ? body.substring(0, idx) + descSection + "\n\n" + details.annotation + "\n" + afterDesc.substring(nextSection)
-                  : body.substring(0, idx) + descSection + "\n\n" + details.annotation + "\n";
+                  ? body.substring(0, idx) + descHeader + "\n\n" + annotation + "\n" + afterDesc.substring(nextSection)
+                  : body.substring(0, idx) + descHeader + "\n\n" + annotation + "\n";
                 item.content = `---\n${rebuildYaml(yaml)}\n---\n${newBody}`;
                 changed = true;
               }
             }
           }
 
-          if (!yaml.genre && details.genreId) {
-            const genreName = genreIdToName(details.genreId);
+          if (item.needsGenre && genreId) {
+            const genreName = genreIdToName(genreId);
             if (genreName) {
               yaml.genre = genreName;
               changed = true;
@@ -1339,7 +1502,6 @@ export async function enrichExistingBooks(
 
           if (changed) {
             let { body: latestBody } = parseFrontmatter(item.content);
-            // Update genre display in body
             if (yaml.genre) {
               latestBody = latestBody.replace(
                 /\*\*Жанр:\*\*\s*—/,
@@ -1348,7 +1510,11 @@ export async function enrichExistingBooks(
             }
             item.content = `---\n${rebuildYaml(yaml)}\n---\n${latestBody}`;
             await writeFile(join(booksDir, item.file), item.content, "utf-8");
-            report.enriched++;
+            if (fromWeb) {
+              report.webEnriched++;
+            } else {
+              report.enriched++;
+            }
           } else {
             report.skipped++;
           }
@@ -1389,7 +1555,8 @@ function rebuildYaml(yaml: Record<string, unknown>): string {
 export function formatEnrichReport(report: EnrichReport): string {
   const lines = [
     "Обогащение карточек завершено:",
-    `  Обогащено: ${report.enriched}`,
+    `  Обогащено (AT API): ${report.enriched}`,
+    `  Обогащено (веб-поиск): ${report.webEnriched}`,
     `  Пропущено: ${report.skipped}`,
   ];
   if (report.errors.length > 0) {
