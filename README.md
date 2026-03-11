@@ -51,7 +51,19 @@ MCP-сервер для управления книжными библиотек
 | Инструмент | Описание |
 |------------|----------|
 | `sync_library_to_obsidian` | Синхронизация reading + finished + saved из AT и PB в Obsidian vault: создание/обновление карточек книг, авторов, серий. Автоматически обогащает новые книги аннотациями и жанрами, скачивает обложки. |
-| `enrich_books` | Пакетное обогащение существующих карточек книг аннотациями и жанрами из Author.Today (с учётом rate limit) |
+| `enrich_books` | Пакетное обогащение существующих карточек книг аннотациями и жанрами из Author.Today (с учётом rate limit), с фолбэком на веб-поиск (Google Books, Open Library) |
+
+### CLI-скрипты
+
+Синхронизацию и обогащение можно запускать напрямую из командной строки, без MCP-сервера:
+
+```bash
+npm run sync      # Полная синхронизация библиотеки в Obsidian
+npm run enrich    # Обогащение существующих карточек (по умолчанию batch 50)
+npm run enrich 100  # Обогащение с указанием размера батча
+```
+
+Скрипты читают переменные из `.env` (`--env-file=.env`).
 
 ## Требования
 
@@ -159,15 +171,19 @@ src/
 ├── opds/                 # OPDS-клиент (локальный каталог)
 │   ├── api.ts            # Запрос фидов, поиск, форматирование
 │   └── types.ts          # Типы OPDS Feed/Entry/Link
-└── obsidian/             # Синхронизация с Obsidian vault
-    └── sync.ts           # Обогащение, обложки, авторы, серии, markdown-генерация
+├── obsidian/             # Синхронизация с Obsidian vault
+│   └── sync.ts           # Обогащение, обложки, авторы, серии, markdown-генерация
+├── web-search.ts         # Поиск описаний книг (Google Books + Open Library)
+├── cli-sync.ts           # CLI: запуск синхронизации без MCP-сервера
+└── cli-enrich.ts         # CLI: запуск обогащения без MCP-сервера
 ```
 
 ## Синхронизация с Obsidian — детали
 
 При синхронизации (`sync_library_to_obsidian`):
 
-- **Автоматическое обогащение** — для новых книг из AT загружаются аннотации и жанры через API (пакетно, с паузами для rate limit).
+- **Автоматическое обогащение** — для новых книг из AT загружаются аннотации и жанры через API (пакетно, с паузами для rate limit). Книги без аннотаций дополнительно обогащаются через Google Books API и Open Library (веб-поиск фолбэк).
+- **Pre-scan индексация** — перед синхронизацией строится индекс существующих файлов по source_id и dedup-ключам, что значительно ускоряет проверку дубликатов.
 - **Скачивание обложек** — обложки сохраняются в `Meta/Covers/` и встраиваются в карточки через `![[...]]`.
 - **Распознавание серий** — для книг из PocketBook серия определяется из названия (паттерны: «Серия. Книга N», «Серия N. Подзаголовок», «Серия-N» и т.д.).
 - **Нормализация авторов** — имена из PB сопоставляются с каноническими именами из AT (обработка неполных имён, опечаток, слитных строк вида «Фамилия1 Имя1 Фамилия2 Имя2»).
@@ -180,6 +196,8 @@ src/
 - **Author.Today**: [api.author.today](https://api.author.today/help), [общая информация](https://api.author.today/home/maininfo) — авторизация по токену (Bearer), библиотека через `GET /v1/account/user-library`, каталог через `GET /v1/catalog/search`.
 - **PocketBook Cloud**: неофициальный API `https://cloud.pocketbook.digital/api/v1.0/` — авторизация через OAuth2 (`auth/login`), список книг (`GET /books`), загрузка файлов (`PUT /files/{name}?access_token=...`). Используется в [pocketbook-cloud-sync](https://github.com/micronull/pocketbook-cloud-sync) и [pocketbook2readwise](https://github.com/iterlace/pocketbook2readwise).
 - **OPDS**: формат [OPDS 1.1/1.2](https://specs.opds.io/), совместим с [inpxer](https://github.com/shemanaev/inpxer) и другими OPDS-серверами (Calibre, COPS и т.д.). Поиск кодирует пробелы как `+` для совместимости с inpxer.
+- **Google Books API**: [developers.google.com/books](https://developers.google.com/books) — поиск описаний книг (фолбэк при отсутствии аннотации из AT).
+- **Open Library API**: [openlibrary.org/developers](https://openlibrary.org/developers) — альтернативный источник описаний книг.
 
 ## Лицензия
 
