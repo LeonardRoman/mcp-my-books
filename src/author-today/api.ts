@@ -1,4 +1,4 @@
-import { getToken, clearToken, refreshToken } from "./auth.js";
+import { getToken, clearToken, refreshToken, fetchWithRetry } from "./auth.js";
 import type {
   WorkMetaInfo,
   UserLibraryInfo,
@@ -10,7 +10,7 @@ const API_BASE = "https://api.author.today/v1";
 
 async function authedFetch(url: string, retry = true): Promise<Response> {
   const token = await getToken();
-  const res = await fetch(url, {
+  const res = await fetchWithRetry(url, {
     headers: {
       Authorization: `Bearer ${token}`,
       Accept: "application/json",
@@ -36,26 +36,49 @@ async function authedFetch(url: string, retry = true): Promise<Response> {
 // --- Library ---
 
 let libraryCache: { works: WorkMetaInfo[]; ts: number } | null = null;
+let libraryFetchInFlight: Promise<WorkMetaInfo[]> | null = null;
 const CACHE_TTL_MS = 60_000;
+
+const PAGE_SIZE = 500;
 
 async function fetchFullLibrary(): Promise<WorkMetaInfo[]> {
   if (libraryCache && Date.now() - libraryCache.ts < CACHE_TTL_MS) {
     return libraryCache.works;
   }
+  if (libraryFetchInFlight) return libraryFetchInFlight;
+  libraryFetchInFlight = fetchFullLibraryInner().finally(() => { libraryFetchInFlight = null; });
+  return libraryFetchInFlight;
+}
 
-  const res = await authedFetch(
-    `${API_BASE}/account/user-library?pageSize=500`
-  );
-  if (!res.ok) {
-    throw new Error(
-      `Library fetch failed (${res.status}): ${await res.text()}`
+async function fetchFullLibraryInner(): Promise<WorkMetaInfo[]> {
+
+  const allWorks: WorkMetaInfo[] = [];
+  let page = 1;
+  let totalCount = Infinity;
+
+  while (allWorks.length < totalCount) {
+    const res = await authedFetch(
+      `${API_BASE}/account/user-library?pageSize=${PAGE_SIZE}&page=${page}`
     );
+    if (!res.ok) {
+      throw new Error(
+        `Library fetch failed (${res.status}): ${await res.text()}`
+      );
+    }
+
+    const data: UserLibraryInfo = await res.json();
+    totalCount = data.totalCount ?? 0;
+    const works = data.worksInLibrary ?? [];
+    if (works.length === 0) break;
+    allWorks.push(...works);
+    console.error(`AT library page ${page}: got ${works.length} works (total so far: ${allWorks.length}/${totalCount})`);
+    page++;
+    if (works.length < PAGE_SIZE) break;
+    await new Promise((r) => setTimeout(r, 1000));
   }
 
-  const data: UserLibraryInfo = await res.json();
-  const works = data.worksInLibrary ?? [];
-  libraryCache = { works, ts: Date.now() };
-  return works;
+  libraryCache = { works: allWorks, ts: Date.now() };
+  return allWorks;
 }
 
 export async function getLibrary(
@@ -116,9 +139,56 @@ function mapCatalogWork(raw: Record<string, unknown>): CatalogWork {
   };
 }
 
+// --- Work details (annotation) ---
+
+export interface WorkDetails {
+  id: number;
+  title: string;
+  annotation: string;
+  authorNotes: string;
+  genreId: number;
+  firstSubGenreId: number | null;
+  secondSubGenreId: number | null;
+  genre: string;
+  firstSubGenre: string;
+  secondSubGenre: string;
+  tags: { id: number; title: string }[];
+}
+
+export async function getWorkDetails(workId: number): Promise<WorkDetails | null> {
+  try {
+    const res = await authedFetch(`${API_BASE}/work/${workId}/details`);
+    if (!res.ok) {
+      console.error(`getWorkDetails(${workId})/details: HTTP ${res.status}`);
+      return null;
+    }
+    const details = await res.json();
+
+    const metaRes = await authedFetch(`${API_BASE}/work/${workId}/meta-info`);
+    const meta = metaRes.ok ? await metaRes.json() : {};
+
+    return {
+      id: meta.id ?? workId,
+      title: meta.title ?? "",
+      annotation: stripHtml(details.annotation ?? ""),
+      authorNotes: stripHtml(details.authorNotes ?? ""),
+      genreId: meta.genreId ?? 0,
+      firstSubGenreId: meta.firstSubGenreId ?? null,
+      secondSubGenreId: meta.secondSubGenreId ?? null,
+      genre: "",
+      firstSubGenre: "",
+      secondSubGenre: "",
+      tags: Array.isArray(details.tags) ? details.tags : [],
+    };
+  } catch (err) {
+    console.error(`getWorkDetails(${workId}) error: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
+}
+
 // --- Formatting ---
 
-function stripHtml(html: string): string {
+export function stripHtml(html: string): string {
   return html
     .replace(/<[^>]*>/g, "")
     .replace(/&[^;]+;/g, " ")
