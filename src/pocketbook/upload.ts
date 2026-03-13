@@ -1,5 +1,5 @@
 import { getToken } from "./auth.js";
-import { getBookDetails } from "../opds/api.js";
+import { getBookDetails, searchCatalog } from "../opds/api.js";
 import type { OpdsEntry } from "../opds/types.js";
 
 const API_BASE = "https://cloud.pocketbook.digital/api/v1.0";
@@ -130,8 +130,70 @@ async function uploadToPocketBook(
   }
 }
 
-export async function uploadBookFromOpds(bookId: string): Promise<UploadResult> {
-  const entry = await getBookDetails(bookId);
+/**
+ * Find an OPDS entry by ID. First tries direct lookup (cache + root catalog),
+ * then falls back to text search using provided hint (title/author),
+ * then constructs a minimal entry from the download URL as last resort.
+ *
+ * @param bookId - OPDS entry ID (e.g. "book:813532" or "813532")
+ * @param searchHint - optional title or author text to search by (for cold-cache scenarios)
+ */
+async function findEntry(bookId: string, searchHint?: string): Promise<OpdsEntry | null> {
+  const idNorm = bookId.startsWith("book:") ? bookId : `book:${bookId}`;
+  const numericId = idNorm.replace(/^book:/, "");
+
+  // 1. Direct lookup (cache + root catalog)
+  const direct = await getBookDetails(bookId);
+  if (direct) return direct;
+
+  // 2. Fallback: text search using hint (title/author from prior search)
+  const searchTerms = searchHint ? [searchHint] : [];
+  // Also try numeric ID as search term (some servers support it)
+  searchTerms.push(numericId);
+
+  for (const term of searchTerms) {
+    try {
+      const feed = await searchCatalog(term);
+      const hit = feed.entries.find(
+        (e) => e.id === idNorm || e.id === bookId || e.id === numericId
+      );
+      if (hit) return hit;
+    } catch {
+      // Search failed, try next term
+    }
+  }
+
+  // 3. Last resort: construct minimal entry with download link
+  const baseUrl = getOpdsBaseUrl();
+  try {
+    const controller = new AbortController();
+    const checkRes = await fetch(`${baseUrl}/download/${numericId}`, {
+      headers: { Range: "bytes=0-0" },
+      signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]),
+    });
+    controller.abort();
+    if (checkRes.ok || checkRes.status === 206) {
+      return {
+        id: idNorm,
+        title: searchHint ?? `Book ${numericId}`,
+        authors: [],
+        categories: [],
+        links: [{
+          rel: "http://opds-spec.org/acquisition",
+          href: `/download/${numericId}`,
+          type: "application/fb2",
+        }],
+      };
+    }
+  } catch {
+    // Not reachable
+  }
+
+  return null;
+}
+
+export async function uploadBookFromOpds(bookId: string, searchHint?: string): Promise<UploadResult> {
+  const entry = await findEntry(bookId, searchHint);
   if (!entry) {
     return {
       success: false,

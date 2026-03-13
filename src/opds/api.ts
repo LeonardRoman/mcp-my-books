@@ -181,9 +181,11 @@ export async function searchCatalog(
 export async function getBookDetails(bookId: string): Promise<OpdsEntry | null> {
   const idNorm = bookId.startsWith("book:") ? bookId : `book:${bookId}`;
 
+  // 1. Check in-memory cache (populated by prior search/browse calls)
   const cached = entryCache.get(idNorm) ?? entryCache.get(bookId);
   if (cached) return cached;
 
+  // 2. Check root catalog
   const rootFeed = await browseCatalog("/opds");
   const rootHit = rootFeed.entries.find((e) => e.id === idNorm || e.id === bookId);
   if (rootHit) return rootHit;

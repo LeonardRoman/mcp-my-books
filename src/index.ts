@@ -478,10 +478,11 @@ server.tool(
   "Скачать книгу из OPDS-каталога (локальная библиотека) и загрузить в PocketBook Cloud",
   {
     book_id: z.string().describe("ID книги в OPDS (например book:12345 или 12345)"),
+    search_hint: z.string().optional().describe("Подсказка для поиска (название или автор) — используется если книга не найдена по ID напрямую"),
   },
-  async ({ book_id }) => {
+  async ({ book_id, search_hint }) => {
     try {
-      const result = await uploadBookFromOpds(book_id);
+      const result = await uploadBookFromOpds(book_id, search_hint);
       return {
         content: [{ type: "text" as const, text: formatUploadResult(result) }],
         ...(result.success ? {} : { isError: true }),
