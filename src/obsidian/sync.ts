@@ -825,7 +825,19 @@ function updateBookFrontmatter(
   const updates: Record<string, unknown> = {};
   if (!isAbandoned) {
     updates.status = book.status;
-    if (yaml.progress !== book.progress) {
+    const onDiskProgress = Number(yaml.progress);
+    const incomingProgress = Number(book.progress);
+    // Only update progress (and its timestamp) when it genuinely changed.
+    // Guards against false positives from AT API:
+    // 1. AT returns lastChapterProgress=0 for many completed works
+    // 2. AT returns stale/partial progress (e.g. 81%) for books marked Finished
+    // Never *decrease* progress for "read" books or books already at ≥95%
+    const isDowngrade = incomingProgress < onDiskProgress;
+    const progressActuallyChanged =
+      !isNaN(incomingProgress) &&
+      incomingProgress !== onDiskProgress &&
+      !(isDowngrade && (book.status === "read" || onDiskProgress >= 95));
+    if (progressActuallyChanged) {
       updates.progress = book.progress;
       updates.progress_updated = todayIso();
     }
